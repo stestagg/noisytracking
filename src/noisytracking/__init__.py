@@ -13,7 +13,7 @@ from .constants import (
     Rel,
 )
 from .learned import LearnedBias
-from .builder import Builder, setup
+from .builder import BuildModel, setup
 from .parameter import (
     CompoundParameter,
     Parameter,
@@ -23,6 +23,14 @@ from .parameter import (
     ScalarParameter,
 )
 from .prediction import Motion
+from .time_policy import (
+    DuplicateValueError,
+    SequentialBucketsPolicy,
+    StaleTimestampError,
+    TimePolicy,
+    TimePolicyError,
+    create_time_policy,
+)
 
 __all__ = [
     "CONSTANT_ACCELERATION",
@@ -34,8 +42,9 @@ __all__ = [
     "STEADY_STATE",
     "ChangeModel",
     "CompoundParameter",
+    "DuplicateValueError",
     "LearnedBias",
-    "Builder",
+    "BuildModel",
     "Motion",
     "OutlierHandling",
     "Parameter",
@@ -44,5 +53,10 @@ __all__ = [
     "Rel",
     "Rotation",
     "ScalarParameter",
+    "SequentialBucketsPolicy",
+    "StaleTimestampError",
+    "TimePolicy",
+    "TimePolicyError",
+    "create_time_policy",
     "setup",
 ]

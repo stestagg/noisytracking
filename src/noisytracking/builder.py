@@ -2,19 +2,43 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Optional, Type
 
 from .parameter import Parameter
+from .time_policy import SequentialBucketsPolicy, TimePolicy, create_time_policy
+
+@dataclass
+class SensorDefinition:
+    name: str
+    parameter: Parameter
+    sensor_data_format: Optional[Callable[[Any], Dict[str, Any]]] = None
 
 
-class Builder:
-    def __init__(self, time_field: str, time_units: str, sample_time_policy: str) -> None:
+def get_model_builder_cls(builder_type: str) -> Type["ModelBuilder"]:
+    from .builders.base import ModelBuilder
+    from .builders.pyro_builder import PyroBuilder
+
+    if builder_type == "pyro":
+        return PyroBuilder
+    else:
+        raise ValueError(f"Unknown builder type: {builder_type}")
+
+
+class BuildModel:
+    def __init__(self, time_field: str, time_units: str, sample_time_policy: TimePolicy) -> None:
         self.time_field = time_field
         self.time_units = time_units
         self.sample_time_policy = sample_time_policy
+        self._time_policy: TimePolicy = sample_time_policy
         self._predicted: Dict[str, Parameter] = {}
-        self._sensors: Dict[str, Parameter] = {}
+        self._sensors: Dict[str, SensorDefinition] = {}
         self._learned: Dict[str, Parameter] = {}
+
+    @property
+    def time_policy(self) -> TimePolicy:
+        """Access the time policy instance."""
+        return self._time_policy
 
     def predicted(self, name: str, kind: Parameter) -> Parameter:
         kind.name = name
@@ -28,8 +52,7 @@ class Builder:
         sensor_data_format: Optional[Callable[[Any], Dict[str, Any]]] = None,
     ) -> Parameter:
         kind.name = name
-        kind.sensor_data_format = sensor_data_format
-        self._sensors[name] = kind
+        self._sensors[name] = SensorDefinition(name=name, parameter=kind, sensor_data_format=sensor_data_format)
         return kind
 
     def learned(self, name: str, kind: Parameter) -> Parameter:
@@ -37,11 +60,17 @@ class Builder:
         self._learned[name] = kind
         return kind
 
-    def build(self) -> Any:
-        raise NotImplementedError("Model building is not implemented yet.")
+    def build(self, kind: str="pyro") -> Any:
+        builder_cls = get_model_builder_cls(kind)
+        builder = builder_cls()
+        return builder.build(self)
 
 
-def setup(time_field: str, time_units: str, sample_time_policy: str) -> Builder:
-    return Builder(
-        time_field=time_field, time_units=time_units, sample_time_policy=sample_time_policy
+def setup(time_field: str, time_units: str, sample_time_policy: Optional[TimePolicy]=None) -> BuildModel:
+    if sample_time_policy is None:
+        sample_time_policy = SequentialBucketsPolicy()
+    return BuildModel(
+        time_field=time_field, 
+        time_units=time_units, 
+        sample_time_policy=sample_time_policy
     )
