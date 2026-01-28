@@ -16,13 +16,13 @@ from .learned import LearnedBias
 from .builder import Builder, setup
 from .parameter import (
     CompoundParameter,
-    Motion,
     Parameter,
     Pose,
     Position,
     Rotation,
     ScalarParameter,
 )
+from .prediction import Motion
 
 __all__ = [
     "CONSTANT_ACCELERATION",

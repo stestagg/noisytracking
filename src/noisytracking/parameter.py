@@ -83,14 +83,3 @@ class Pose(CompoundParameter):
         rotation_units = units.get("angle") if isinstance(units, dict) else units
         self.add_child("position", Position(name="position", units=position_units))
         self.add_child("rotation", Rotation(name="rotation", units=rotation_units))
-
-
-class Motion(Pose):
-    def __init__(
-        self,
-        name: Optional[str] = None,
-        units: Optional[Any] = None,
-        expected_change: Optional[int] = None,
-    ) -> None:
-        super().__init__(name=name, units=units)
-        self.expected_change = expected_change
