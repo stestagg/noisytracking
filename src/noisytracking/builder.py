@@ -29,16 +29,10 @@ class BuildModel:
     def __init__(self, time_field: str, time_units: str, sample_time_policy: TimePolicy) -> None:
         self.time_field = time_field
         self.time_units = time_units
-        self.sample_time_policy = sample_time_policy
-        self._time_policy: TimePolicy = sample_time_policy
+        self.time_policy = sample_time_policy
         self._predicted: Dict[str, Parameter] = {}
         self._sensors: Dict[str, SensorDefinition] = {}
         self._learned: Dict[str, Parameter] = {}
-
-    @property
-    def time_policy(self) -> TimePolicy:
-        """Access the time policy instance."""
-        return self._time_policy
 
     def predicted(self, name: str, kind: Parameter) -> Parameter:
         kind.name = name
