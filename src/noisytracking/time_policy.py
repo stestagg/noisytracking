@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
+
+@dataclass
+class Observations:
+    timestamp: float
+    previous_timestamp: Optional[float]
+    sensor_data: Dict[str, Any]
 
 
 class TimePolicyError(Exception):
@@ -51,9 +59,7 @@ class TimePolicy(ABC):
         pass
 
     @abstractmethod
-    def get_samples_up_to(
-        self, timestamp: float
-    ) -> List[Tuple[float, Dict[str, Dict[str, Any]]]]:
+    def get_samples_up_to(self, timestamp: float) -> List[Observations]:
         """Get all samples up to and including the given timestamp.
 
         Removes the returned samples from the buffer and updates the
@@ -63,8 +69,7 @@ class TimePolicy(ABC):
             timestamp: The cutoff timestamp (inclusive).
 
         Returns:
-            A list of tuples (timestamp, sensor_data) sorted by timestamp,
-            where sensor_data is a dict mapping sensor names to their data.
+            A list of Observations sorted by timestamp.
         """
         pass
 
@@ -128,9 +133,7 @@ class SequentialBucketsPolicy(TimePolicy):
             self._buckets[timestamp] = {}
         self._buckets[timestamp][sensor_name] = data
 
-    def get_samples_up_to(
-        self, timestamp: float
-    ) -> List[Tuple[float, Dict[str, Dict[str, Any]]]]:
+    def get_samples_up_to(self, timestamp: float) -> List[Observations]:
         """Get all samples up to and including the given timestamp.
 
         Removes the returned samples from the buffer and updates the
@@ -140,17 +143,24 @@ class SequentialBucketsPolicy(TimePolicy):
             timestamp: The cutoff timestamp (inclusive).
 
         Returns:
-            A list of tuples (timestamp, sensor_data) sorted by timestamp,
-            where sensor_data is a dict mapping sensor names to their data.
+            A list of Observations sorted by timestamp.
         """
         # Collect samples up to the given timestamp
-        result: List[Tuple[float, Dict[str, Dict[str, Any]]]] = []
+        result: List[Observations] = []
         timestamps_to_remove: List[float] = []
+        previous_ts: Optional[float] = self._last_request_timestamp
 
         for ts in sorted(self._buckets.keys()):
             if ts <= timestamp:
-                result.append((ts, self._buckets[ts]))
+                result.append(
+                    Observations(
+                        timestamp=ts,
+                        previous_timestamp=previous_ts,
+                        sensor_data=self._buckets[ts],
+                    )
+                )
                 timestamps_to_remove.append(ts)
+                previous_ts = ts
             else:
                 break
 

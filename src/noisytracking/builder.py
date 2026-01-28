@@ -26,9 +26,7 @@ def get_model_builder_cls(builder_type: str) -> Type["ModelBuilder"]:
 
 
 class BuildModel:
-    def __init__(self, time_field: str, time_units: str, sample_time_policy: TimePolicy) -> None:
-        self.time_field = time_field
-        self.time_units = time_units
+    def __init__(self, sample_time_policy: TimePolicy) -> None:
         self.time_policy = sample_time_policy
         self._predicted: Dict[str, Parameter] = {}
         self._sensors: Dict[str, SensorDefinition] = {}
@@ -56,15 +54,11 @@ class BuildModel:
 
     def build(self, kind: str="pyro") -> Any:
         builder_cls = get_model_builder_cls(kind)
-        builder = builder_cls()
-        return builder.build(self)
+        builder = builder_cls(self)
+        return builder.build()
 
 
-def setup(time_field: str, time_units: str, sample_time_policy: Optional[TimePolicy]=None) -> BuildModel:
+def setup(sample_time_policy: Optional[TimePolicy]=None) -> BuildModel:
     if sample_time_policy is None:
         sample_time_policy = SequentialBucketsPolicy()
-    return BuildModel(
-        time_field=time_field, 
-        time_units=time_units, 
-        sample_time_policy=sample_time_policy
-    )
+    return BuildModel(sample_time_policy=sample_time_policy)

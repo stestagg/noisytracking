@@ -21,8 +21,12 @@ class OutlierHandling(str, Enum):
 
 
 class ChangeModel(str, Enum):
+    NO_DRIFT = "no_drift"
+    DRIFT = "drift"
     DRIFT_WITH_JUMPS = "drift_with_jumps"
 
 
 class Rel(str, Enum):
+    absolute = "absolute"
     delta = "delta"
+    per_second = "per_second"

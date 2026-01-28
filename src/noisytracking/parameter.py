@@ -2,20 +2,33 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from dataclasses import dataclass, make_dataclass
 from typing import Any, Dict, List, Optional
 
 from .constants import OutlierHandling, Rel
 from .relationship import Relationship
+from .units import (
+    Dimension,
+    MODIFIER_DIMENSIONS,
+    DimensionValidationError,
+    ParsedUnit,
+    UnitParser,
+    LENGTH,
+    ANGLE,
+)
 
 
 class Parameter:
-    """Base parameter in the model builder tree."""
-
     def __init__(self, name: Optional[str] = None, units: Optional[Any] = None) -> None:
         self.name = name
         self.units = units
         self._children: Dict[str, Parameter] = {}
         self._relationships: List[Relationship] = []
+
+    @classmethod
+    def get_prediction_type(cls) -> Any:
+        raise NotImplementedError("Subclasses must implement get_prediction_type method.")
 
     @property
     def child_parameters(self) -> Dict[str, "Parameter"]:
@@ -38,6 +51,13 @@ class Parameter:
         self._relationships.append(
             Relationship(source=source, rel=rel, outlier_handling=outlier_handling)
         )
+    
+    def set_standard_deviation(self, stddev: float) -> None:
+        for child in self._children.values():
+            child.set_standard_deviation(stddev)
+
+    def set_constant(self, value: Any) -> None:
+        raise NotImplementedError("Subclasses must implement set_constant method.")
 
     def clone(self, name: Optional[str] = None) -> "Parameter":
         cloned = self.__class__(name=name or self.name, units=self.units)
@@ -47,33 +67,107 @@ class Parameter:
 
 
 class ScalarParameter(Parameter):
-    """A leaf parameter."""
 
-    def __init__(self, name: Optional[str] = None, units: Optional[Any] = None) -> None:
-        super().__init__(name=name, units=units)
+    @dataclass
+    class PredictionType:
+        value: float
+        standard_deviation: float
+
+    def __init__(
+        self,
+        name: Optional[str] = None,
+        units: Optional[str] = None,
+        allowed_dimensions: Optional[list[Dimension]] = None,
+        standard_deviation: Optional[float] = None,
+    ) -> None:
+        super().__init__(name=name, units=None)  # Parse below, not raw string
+        self.allowed_dimensions = allowed_dimensions
+        # These don't get cloned automatically
+        self.standard_deviation = standard_deviation
+        self.constant_value: Optional[float] = None
+
+        if units is not None:
+            parser = UnitParser()
+            parsed = parser.parse(units)
+            self._validate_dimensions(parsed, units)
+            self.units = parsed
+        else:
+            self.units = None
+
+    def _validate_dimensions(self, parsed: ParsedUnit, unit_string: str) -> None:
+        """Validate that parsed unit dimensions match allowed_dimensions."""
+        if self.allowed_dimensions is None:
+            return  # No restrictions
+
+        expected_counts = Counter(self.allowed_dimensions)
+        actual_counts: Counter[Dimension] = Counter()
+        for term in parsed.terms:
+            if term.dimension not in MODIFIER_DIMENSIONS:
+                actual_counts[term.dimension] += 1
+
+        if actual_counts != expected_counts:
+            raise DimensionValidationError(
+                unit_string=unit_string,
+                expected_dimensions=self.allowed_dimensions,
+                actual_counts=actual_counts,
+                parameter_name=self.name,
+            )
+        
+    def set_standard_deviation(self, stddev: float) -> None:
+        self.standard_deviation = stddev
+
+    def set_constant(self, value: float) -> None:
+        self.constant_value = value
+
+    def clone(self, name: Optional[str] = None) -> "ScalarParameter":
+        return ScalarParameter(
+            name=name or self.name,
+            units=self.units.to_string() if self.units else None,
+            allowed_dimensions=self.allowed_dimensions,
+        )
+
+    @classmethod
+    def get_prediction_type(cls) -> Any:
+        return ScalarParameter.PredictionType
+
+    def is_compatible_with(self, other: Parameter) -> bool:
+        return isinstance(other, ScalarParameter) and self.units.dimension == other.units.dimension
 
 
 class CompoundParameter(Parameter):
-    """Parameter composed of sub-parameters."""
 
     def __init__(self, name: Optional[str] = None, units: Optional[Any] = None) -> None:
-        super().__init__(name=name, units=units)
+        super().__init__(name=name, units=units)        
+
+    @classmethod
+    def get_prediction_type(cls) -> Any:
+        if '_OutputValueType' not in cls.__dict__:
+            fields = []
+            for child_name, child in cls().child_parameters.items():
+                fields.append((child_name, child.get_prediction_type()))
+            cls._OutputValueType = make_dataclass(f"{cls.__name__}Value", fields)
+        return cls._OutputValueType
+    
+    def set_constant(self, value: Dict[str, Any]) -> None:
+        for name, param in self.child_parameters.items():
+            if name in value:
+                param.set_constant(value[name])
 
 
 class Position(CompoundParameter):
-    def __init__(self, name: Optional[str] = None, units: Optional[Any] = None) -> None:
+    def __init__(self, name: Optional[str] = None, units: Optional[str] = None) -> None:
         super().__init__(name=name, units=units)
-        self.add_child("x", ScalarParameter(name="x", units=units))
-        self.add_child("y", ScalarParameter(name="y", units=units))
-        self.add_child("z", ScalarParameter(name="z", units=units))
+        self.add_child("x", ScalarParameter(name="x", units=units, allowed_dimensions=[LENGTH]))
+        self.add_child("y", ScalarParameter(name="y", units=units, allowed_dimensions=[LENGTH]))
+        self.add_child("z", ScalarParameter(name="z", units=units, allowed_dimensions=[LENGTH]))
 
 
 class Rotation(CompoundParameter):
-    def __init__(self, name: Optional[str] = None, units: Optional[Any] = None) -> None:
+    def __init__(self, name: Optional[str] = None, units: Optional[str] = None) -> None:
         super().__init__(name=name, units=units)
-        self.add_child("yaw", ScalarParameter(name="yaw", units=units))
-        self.add_child("pitch", ScalarParameter(name="pitch", units=units))
-        self.add_child("roll", ScalarParameter(name="roll", units=units))
+        self.add_child("yaw", ScalarParameter(name="yaw", units=units, allowed_dimensions=[ANGLE]))
+        self.add_child("pitch", ScalarParameter(name="pitch", units=units, allowed_dimensions=[ANGLE]))
+        self.add_child("roll", ScalarParameter(name="roll", units=units, allowed_dimensions=[ANGLE]))
 
 
 class Pose(CompoundParameter):

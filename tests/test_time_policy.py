@@ -4,6 +4,7 @@ import pytest
 import noisytracking as nt
 from noisytracking.time_policy import (
     DuplicateValueError,
+    Observations,
     SequentialBucketsPolicy,
     StaleTimestampError,
     TimePolicy,
@@ -25,8 +26,16 @@ class TestSequentialBucketsPolicy:
         samples = policy.get_samples_up_to(2.0)
 
         assert len(samples) == 2
-        assert samples[0] == (1.0, {"sensor1": {"x": 1.0, "y": 2.0}})
-        assert samples[1] == (2.0, {"sensor1": {"x": 1.1, "y": 2.1}})
+        assert samples[0] == Observations(
+            timestamp=1.0,
+            previous_timestamp=None,
+            sensor_data={"sensor1": {"x": 1.0, "y": 2.0}},
+        )
+        assert samples[1] == Observations(
+            timestamp=2.0,
+            previous_timestamp=1.0,
+            sensor_data={"sensor1": {"x": 1.1, "y": 2.1}},
+        )
 
     def test_multiple_sensors_same_timestamp(self):
         """Test multiple sensors at the same timestamp."""
@@ -38,9 +47,10 @@ class TestSequentialBucketsPolicy:
         samples = policy.get_samples_up_to(1.0)
 
         assert len(samples) == 1
-        assert samples[0] == (
-            1.0,
-            {"sensor1": {"x": 1.0, "y": 2.0}, "sensor2": {"yaw": 0.5}},
+        assert samples[0] == Observations(
+            timestamp=1.0,
+            previous_timestamp=None,
+            sensor_data={"sensor1": {"x": 1.0, "y": 2.0}, "sensor2": {"yaw": 0.5}},
         )
 
     def test_samples_returned_in_timestamp_order(self):
@@ -54,7 +64,7 @@ class TestSequentialBucketsPolicy:
 
         samples = policy.get_samples_up_to(3.0)
 
-        timestamps = [ts for ts, _ in samples]
+        timestamps = [s.timestamp for s in samples]
         assert timestamps == [1.0, 2.0, 3.0]
 
     def test_get_samples_up_to_partial(self):
@@ -68,13 +78,13 @@ class TestSequentialBucketsPolicy:
         samples = policy.get_samples_up_to(2.0)
 
         assert len(samples) == 2
-        assert samples[0][0] == 1.0
-        assert samples[1][0] == 2.0
+        assert samples[0].timestamp == 1.0
+        assert samples[1].timestamp == 2.0
 
         # Remaining sample should still be there
         remaining = policy.get_samples_up_to(3.0)
         assert len(remaining) == 1
-        assert remaining[0][0] == 3.0
+        assert remaining[0].timestamp == 3.0
 
     def test_same_timestamp_allowed_for_same_sensor(self):
         """Test that the same timestamp is allowed if data is identical."""
@@ -148,7 +158,11 @@ class TestSequentialBucketsPolicy:
 
         samples = policy.get_samples_up_to(1.0)
         assert len(samples) == 1
-        assert samples[0] == (0.5, {"sensor1": {"x": 0.5}})
+        assert samples[0] == Observations(
+            timestamp=0.5,
+            previous_timestamp=None,
+            sensor_data={"sensor1": {"x": 0.5}},
+        )
 
     def test_empty_get_samples(self):
         """Test getting samples when none exist."""
@@ -194,8 +208,6 @@ class TestBuilderIntegration:
     def test_builder_creates_time_policy(self):
         """Test that Builder creates a time policy instance."""
         builder = nt.setup(
-            time_field="timestamp",
-            time_units="sample",
             sample_time_policy=nt.SequentialBucketsPolicy(),
         )
 
@@ -206,8 +218,6 @@ class TestBuilderIntegration:
     def test_builder_time_policy_is_usable(self):
         """Test that the builder's time policy can be used."""
         builder = nt.setup(
-            time_field="timestamp",
-            time_units="sample",
             sample_time_policy=nt.SequentialBucketsPolicy(),
         )
 
@@ -215,4 +225,8 @@ class TestBuilderIntegration:
         samples = builder.time_policy.get_samples_up_to(1.0)
 
         assert len(samples) == 1
-        assert samples[0] == (1.0, {"gps": {"x": 1.0, "y": 2.0}})
+        assert samples[0] == Observations(
+            timestamp=1.0,
+            previous_timestamp=None,
+            sensor_data={"gps": {"x": 1.0, "y": 2.0}},
+        )

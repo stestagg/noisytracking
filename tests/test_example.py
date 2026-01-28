@@ -10,7 +10,7 @@ def pose_from_matrix(x):
 
 
 def test_example():
-    model = nt.setup(time_field="timestamp", time_units="sample")
+    model = nt.setup()
 
     user_position = model.predicted(
         name="position",
