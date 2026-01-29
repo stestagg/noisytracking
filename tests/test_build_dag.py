@@ -11,7 +11,7 @@ from noisytracking.build_helpers import (
     get_path_from_ancestor,
     DAGNode,
     SensorInput,
-    LearnedInput,
+    LearnedValue,
     Scale,
     State,
     StateUpdate,
@@ -248,14 +248,14 @@ class TestBuildDag:
         out_x = dag["position.x"]
         update = out_x.inputs[0]
         assert isinstance(update, Update)
-        assert update.rel_type == nt.Rel.delta
 
         # Should have StateUpdate as input
         state_update = update.inputs[0]
         assert isinstance(state_update, StateUpdate)
+        assert state_update.update_type == nt.Rel.delta
         assert state_update.state_ref is not None
         assert isinstance(state_update.state_ref, State)
-        assert state_update.state_ref.state_name == "position.x"
+        assert state_update.state_ref.state_name == state_update.id
 
     def test_multiple_sources(self):
         """Parameter with multiple sources should have multiple Update inputs."""
@@ -288,7 +288,7 @@ class TestBuildDag:
         assert update.outlier_handling == nt.OutlierHandling.HEAVY_TAILED
 
     def test_learned_input(self):
-        """Learned parameters should create LearnedInput nodes."""
+        """Learned parameters should expand to learned value nodes with inputs."""
         model = nt.setup()
         pos = model.predicted("position", kind=nt.Position(units="m"))
         tracking = model.sensor("tracking", kind=nt.Position(units="m/sample"))
@@ -312,13 +312,14 @@ class TestBuildDag:
         # First input is State, second is the learned input (possibly with scale)
         learned_input = state_update.inputs[1]
 
-        # May be LearnedInput directly or Scale->LearnedInput
+        # May be LearnedValue directly or Scale->LearnedValue
         if isinstance(learned_input, Scale):
             learned_input = learned_input.inputs[0]
 
-        assert isinstance(learned_input, LearnedInput)
+        assert isinstance(learned_input, LearnedValue)
         assert learned_input.learned_name == "tracking_bias"
         assert learned_input.parameter_path == ('applied', 'x')
+        assert learned_input.inputs
 
     def test_unit_scaling(self):
         """Unit conversion should create Scale nodes."""
@@ -380,6 +381,7 @@ class TestBuildDag:
         )
         tracking_bias.bias.position.is_estimated_from(gps)
         tracking_bias.bias.rotation.yaw.is_estimated_from(gps_heading.yaw)
+        tracking_bias.applied.is_estimated_from(tracking, rel=nt.Rel.delta)
 
         # Integrate tracking
         user_position.is_estimated_from(
@@ -399,9 +401,17 @@ class TestBuildDag:
         assert len(out_pos_x.inputs) == 2  # GPS + tracking
 
         # One should be absolute (GPS), one should be delta (tracking)
-        rel_types = [inp.rel_type for inp in out_pos_x.inputs]
-        assert None in rel_types or nt.Rel.absolute in rel_types  # GPS is absolute
-        assert nt.Rel.delta in rel_types  # tracking is delta
+        has_delta = any(
+            isinstance(inp.inputs[0], StateUpdate)
+            and inp.inputs[0].update_type == nt.Rel.delta
+            for inp in out_pos_x.inputs
+        )
+        has_absolute = any(
+            not isinstance(inp.inputs[0], StateUpdate)
+            for inp in out_pos_x.inputs
+        )
+        assert has_absolute  # GPS is absolute
+        assert has_delta  # tracking is delta
 
         # Check rotation.yaw has GPS heading and tracking
         out_yaw = dag["position.rotation.yaw"]
@@ -410,7 +420,8 @@ class TestBuildDag:
         # Check rotation.pitch/roll only have tracking (no GPS heading for those)
         out_pitch = dag["position.rotation.pitch"]
         assert len(out_pitch.inputs) == 1
-        assert out_pitch.inputs[0].rel_type == nt.Rel.delta
+        assert isinstance(out_pitch.inputs[0].inputs[0], StateUpdate)
+        assert out_pitch.inputs[0].inputs[0].update_type == nt.Rel.delta
 
     def test_no_relationships(self):
         """Predicted parameter with no relationships should still create outputs."""
@@ -460,7 +471,7 @@ class TestDagTraversal:
         assert len(all_nodes) > 0
 
     def test_state_nodes_shared(self):
-        """State nodes should be shared across relationships affecting same leaf."""
+        """State nodes should be unique per delta relationship."""
         model = nt.setup()
         pos = model.predicted("position", kind=nt.Position(units="m"))
         tracking1 = model.sensor("tracking1", kind=nt.Position(units="m/sample"))
@@ -480,4 +491,4 @@ class TestDagTraversal:
                 state_refs.append(state_update.state_ref)
 
         assert len(state_refs) == 2
-        assert state_refs[0] is state_refs[1]
+        assert state_refs[0] is not state_refs[1]
