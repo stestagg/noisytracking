@@ -453,3 +453,70 @@ def build_dag(model: "BuildModel") -> Dict[str, PredictionOutput]:
             outputs[output_path_str] = output_node
 
     return outputs
+
+
+def render_dag_mermaid(outputs: Dict[str, PredictionOutput]) -> str:
+    """Render a DAG as a Mermaid flowchart.
+
+    Args:
+        outputs: Dict mapping output paths to PredictionOutput nodes.
+
+    Returns:
+        Mermaid flowchart text that can be rendered by Mermaid-compatible tools.
+    """
+    nodes: Dict[str, DAGNode] = {}
+    edges: set[Tuple[str, str]] = set()
+
+    def format_path(path: Tuple[str, ...]) -> str:
+        return ".".join(path) if path else ""
+
+    def escape_label(label: str) -> str:
+        return label.replace('"', '\\"')
+
+    def node_label(node: DAGNode) -> str:
+        if isinstance(node, SensorInput):
+            path = format_path(node.parameter_path)
+            label = f"Sensor: {node.sensor_name}"
+            if path:
+                label += f".{path}"
+            return label
+        if isinstance(node, LearnedInput):
+            path = format_path(node.parameter_path)
+            label = f"Learned: {node.learned_name}"
+            if path:
+                label += f".{path}"
+            return label
+        if isinstance(node, Scale):
+            return f"Scale x{node.scale_factor:g}"
+        if isinstance(node, State):
+            return f"State: {node.state_name}"
+        if isinstance(node, StateUpdate):
+            return "State Update"
+        if isinstance(node, Update):
+            rel_name = node.rel_type.value if node.rel_type else "update"
+            if node.outlier_handling:
+                return f"Update ({rel_name}, {node.outlier_handling.value})"
+            return f"Update ({rel_name})"
+        if isinstance(node, PredictionOutput):
+            full_path = ".".join((node.parameter_name,) + node.path)
+            return f"Output: {full_path}"
+        return node.id
+
+    def visit(node: DAGNode) -> None:
+        if node.id in nodes:
+            return
+        nodes[node.id] = node
+        for input_node in node.inputs:
+            edges.add((input_node.id, node.id))
+            visit(input_node)
+
+    for output_node in outputs.values():
+        visit(output_node)
+
+    lines = ["flowchart TD"]
+    for node_id in sorted(nodes):
+        label = escape_label(node_label(nodes[node_id]))
+        lines.append(f'    {node_id}["{label}"]')
+    for source_id, target_id in sorted(edges):
+        lines.append(f"    {source_id} --> {target_id}")
+    return "\n".join(lines)
