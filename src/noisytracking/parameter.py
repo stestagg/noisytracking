@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, make_dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from .constants import OutlierHandling, Rel
 from .relationship import Relationship
@@ -17,6 +17,9 @@ from .units import (
     LENGTH,
     ANGLE,
 )
+
+if TYPE_CHECKING:
+    from .op_graph import OpGraphHelper, OpNode
 
 
 class Parameter:
@@ -51,6 +54,15 @@ class Parameter:
         self._relationships.append(
             Relationship(source=source, rel=rel, outlier_handling=outlier_handling)
         )
+
+    def get_custom_ops(
+        self,
+        helper: "OpGraphHelper",
+        root_name: str,
+        leaf_path: Tuple[str, ...],
+        leaf: Optional["ScalarParameter"],
+    ) -> List["OpNode"]:
+        return []
     
     def set_standard_deviation(self, stddev: float) -> None:
         for child in self._children.values():

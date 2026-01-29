@@ -22,6 +22,7 @@ from .parameter import (
     Rotation,
     ScalarParameter,
 )
+from .op_graph import OpGraph
 from .prediction import Motion
 from .time_policy import (
     DuplicateValueError,
@@ -46,6 +47,7 @@ __all__ = [
     "LearnedBias",
     "BuildModel",
     "Motion",
+    "OpGraph",
     "OutlierHandling",
     "Parameter",
     "Pose",
