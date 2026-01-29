@@ -1,18 +1,19 @@
-"""Tests for the DAG builder."""
+"""Tests for the operation graph builder."""
 
 import pytest
 import noisytracking as nt
-from noisytracking.build_helpers import (
-    build_dag,
+from noisytracking.op_graph import (
+    OpGraph,
     collect_scalar_leaves,
     find_source_info,
     compute_scale_factor,
     is_descendant_of,
     get_path_from_ancestor,
-    DAGNode,
+    OpNode,
     SensorInput,
     LearnedValue,
     Scale,
+    Bias,
     State,
     StateUpdate,
     Update,
@@ -200,8 +201,8 @@ class TestGetPathFromAncestor:
         assert get_path_from_ancestor(pos1, pos2) is None
 
 
-class TestBuildDag:
-    """Tests for the main build_dag function."""
+class TestBuildOpGraph:
+    """Tests for the main operation graph builder."""
 
     def test_simple_sensor_relationship(self):
         """Simple sensor to predicted relationship."""
@@ -210,16 +211,16 @@ class TestBuildDag:
         gps = model.sensor("gps", kind=nt.Position(units="m"))
         pos.is_estimated_from(gps)
 
-        dag = build_dag(model)
+        op_graph = OpGraph.from_model(model)
 
         # Should have 3 outputs (x, y, z)
-        assert len(dag) == 3
-        assert "position.x" in dag
-        assert "position.y" in dag
-        assert "position.z" in dag
+        assert len(op_graph) == 3
+        assert "position.x" in op_graph
+        assert "position.y" in op_graph
+        assert "position.z" in op_graph
 
         # Check structure of one output
-        out_x = dag["position.x"]
+        out_x = op_graph["position.x"]
         assert isinstance(out_x, PredictionOutput)
         assert out_x.parameter_name == "position"
         assert out_x.path == ('x',)
@@ -243,9 +244,9 @@ class TestBuildDag:
         tracking = model.sensor("tracking", kind=nt.Position(units="m/sample"))
         pos.is_estimated_from(tracking, rel=nt.Rel.delta)
 
-        dag = build_dag(model)
+        op_graph = OpGraph.from_model(model)
 
-        out_x = dag["position.x"]
+        out_x = op_graph["position.x"]
         update = out_x.inputs[0]
         assert isinstance(update, Update)
 
@@ -267,9 +268,9 @@ class TestBuildDag:
         pos.is_estimated_from(gps)
         pos.is_estimated_from(tracking, rel=nt.Rel.delta)
 
-        dag = build_dag(model)
+        op_graph = OpGraph.from_model(model)
 
-        out_x = dag["position.x"]
+        out_x = op_graph["position.x"]
         # Should have two Update inputs
         assert len(out_x.inputs) == 2
         assert all(isinstance(inp, Update) for inp in out_x.inputs)
@@ -281,9 +282,9 @@ class TestBuildDag:
         gps = model.sensor("gps", kind=nt.Position(units="m"))
         pos.is_estimated_from(gps, outlier_handling=nt.OutlierHandling.HEAVY_TAILED)
 
-        dag = build_dag(model)
+        op_graph = OpGraph.from_model(model)
 
-        out_x = dag["position.x"]
+        out_x = op_graph["position.x"]
         update = out_x.inputs[0]
         assert update.outlier_handling == nt.OutlierHandling.HEAVY_TAILED
 
@@ -301,9 +302,9 @@ class TestBuildDag:
         )
         pos.is_estimated_from(tracking_bias.applied, rel=nt.Rel.delta)
 
-        dag = build_dag(model)
+        op_graph = OpGraph.from_model(model)
 
-        out_x = dag["position.x"]
+        out_x = op_graph["position.x"]
         update = out_x.inputs[0]
         state_update = update.inputs[0]
 
@@ -320,6 +321,7 @@ class TestBuildDag:
         assert learned_input.learned_name == "tracking_bias"
         assert learned_input.parameter_path == ('applied', 'x')
         assert learned_input.inputs
+        assert any(isinstance(inp, Bias) for inp in learned_input.inputs)
 
     def test_unit_scaling(self):
         """Unit conversion should create Scale nodes."""
@@ -328,9 +330,9 @@ class TestBuildDag:
         gps = model.sensor("gps", kind=nt.Position(units="km"))
         pos.is_estimated_from(gps)
 
-        dag = build_dag(model)
+        op_graph = OpGraph.from_model(model)
 
-        out_x = dag["position.x"]
+        out_x = op_graph["position.x"]
         update = out_x.inputs[0]
 
         # Should have Scale node between sensor and update
@@ -390,13 +392,13 @@ class TestBuildDag:
             outlier_handling=nt.OutlierHandling.HEAVY_TAILED
         )
 
-        dag = build_dag(model)
+        op_graph = OpGraph.from_model(model)
 
         # Should have 6 outputs (position x,y,z + rotation yaw,pitch,roll)
-        assert len(dag) == 6
+        assert len(op_graph) == 6
 
         # Check position.x has both GPS and tracking sources
-        out_pos_x = dag["position.position.x"]
+        out_pos_x = op_graph["position.position.x"]
         assert isinstance(out_pos_x, PredictionOutput)
         assert len(out_pos_x.inputs) == 2  # GPS + tracking
 
@@ -414,11 +416,11 @@ class TestBuildDag:
         assert has_delta  # tracking is delta
 
         # Check rotation.yaw has GPS heading and tracking
-        out_yaw = dag["position.rotation.yaw"]
+        out_yaw = op_graph["position.rotation.yaw"]
         assert len(out_yaw.inputs) == 2
 
         # Check rotation.pitch/roll only have tracking (no GPS heading for those)
-        out_pitch = dag["position.rotation.pitch"]
+        out_pitch = op_graph["position.rotation.pitch"]
         assert len(out_pitch.inputs) == 1
         assert isinstance(out_pitch.inputs[0].inputs[0], StateUpdate)
         assert out_pitch.inputs[0].inputs[0].update_type == nt.Rel.delta
@@ -428,18 +430,18 @@ class TestBuildDag:
         model = nt.setup()
         pos = model.predicted("position", kind=nt.Position(units="m"))
 
-        dag = build_dag(model)
+        op_graph = OpGraph.from_model(model)
 
-        assert len(dag) == 3
-        out_x = dag["position.x"]
+        assert len(op_graph) == 3
+        out_x = op_graph["position.x"]
         assert out_x.inputs == []
 
 
-class TestDagTraversal:
-    """Tests for DAG traversal and node connectivity."""
+class TestGraphTraversal:
+    """Tests for operation graph traversal and node connectivity."""
 
-    def collect_all_nodes(self, node: DAGNode, visited: set = None) -> set:
-        """Recursively collect all nodes in the DAG."""
+    def collect_all_nodes(self, node: OpNode, visited: set = None) -> set:
+        """Recursively collect all nodes in the operation graph."""
         if visited is None:
             visited = set()
         if node.id in visited:
@@ -449,7 +451,7 @@ class TestDagTraversal:
             self.collect_all_nodes(inp, visited)
         return visited
 
-    def test_dag_is_connected(self):
+    def test_graph_is_connected(self):
         """All nodes should be reachable from outputs."""
         model = nt.setup()
         pos = model.predicted("position", kind=nt.Position(units="m"))
@@ -458,11 +460,11 @@ class TestDagTraversal:
         pos.is_estimated_from(gps)
         pos.is_estimated_from(tracking, rel=nt.Rel.delta)
 
-        dag = build_dag(model)
+        op_graph = OpGraph.from_model(model)
 
         # Collect all nodes from all outputs
         all_nodes: set = set()
-        for output in dag.values():
+        for output in op_graph.values():
             self.collect_all_nodes(output, all_nodes)
 
         # Should have nodes for all components
@@ -479,9 +481,9 @@ class TestDagTraversal:
         pos.is_estimated_from(tracking1, rel=nt.Rel.delta)
         pos.is_estimated_from(tracking2, rel=nt.Rel.delta)
 
-        dag = build_dag(model)
+        op_graph = OpGraph.from_model(model)
 
-        out_x = dag["position.x"]
+        out_x = op_graph["position.x"]
 
         # Both updates should reference the same state
         state_refs = []
