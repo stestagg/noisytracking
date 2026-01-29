@@ -38,8 +38,8 @@ class SensorInput(DAGNode):
 
 
 @dataclass
-class LearnedInput(DAGNode):
-    """Input node representing a learned parameter."""
+class LearnedValue(DAGNode):
+    """Value node representing a learned parameter."""
     learned_name: str = ""
     parameter_path: Tuple[str, ...] = ()
     units: Optional[ParsedUnit] = None
@@ -68,13 +68,13 @@ class State(DAGNode):
 class StateUpdate(DAGNode):
     """Updates state: new_value = state + scaled_delta."""
     state_ref: Optional[State] = None
+    update_type: Optional[Rel] = None
 
 
 @dataclass
 class Update(DAGNode):
     """Bayesian update / measurement fusion."""
     outlier_handling: Optional[OutlierHandling] = None
-    rel_type: Optional[Rel] = None
 
 
 # Output Nodes
@@ -323,8 +323,127 @@ def build_dag(model: "BuildModel") -> Dict[str, PredictionOutput]:
         node_counter += 1
         return f"{prefix}_{node_counter}"
 
-    # Track state nodes by path to reuse them
-    state_nodes: Dict[str, State] = {}
+    learned_nodes: Dict[Tuple[str, Tuple[str, ...]], LearnedValue] = {}
+
+    def build_value_node(
+        root_name: str,
+        root_param: "Parameter",
+        leaf_path: Tuple[str, ...],
+        leaf: Optional["ScalarParameter"],
+        *,
+        is_output: bool,
+    ) -> DAGNode:
+        if not is_output:
+            cache_key = (root_name, leaf_path)
+            if cache_key in learned_nodes:
+                return learned_nodes[cache_key]
+
+        relationships = collect_applicable_relationships(root_param, leaf_path, leaf)
+        if not relationships:
+            from .learned import LearnedBias
+            if isinstance(root_param, LearnedBias):
+                if leaf_path and leaf_path[0] == "applied":
+                    source_subpath = leaf_path[1:]
+                    relationships = [
+                        (root_param, root_param.target, Rel.absolute, None, source_subpath),
+                    ]
+        input_nodes: List[DAGNode] = []
+
+        for _, source_param, rel_type, outlier, source_subpath in relationships:
+            try:
+                source_type, source_name, source_base_path = find_source_info(
+                    source_param, model
+                )
+            except ValueError:
+                continue
+
+            full_source_path = source_base_path + source_subpath
+
+            if source_type == "sensor":
+                source_root = model._sensors[source_name].parameter
+            else:
+                source_root = model._learned[source_name]
+
+            source_leaf = navigate_to_leaf(source_root, full_source_path)
+            source_units = source_leaf.units if source_leaf else None
+
+            if source_type == "sensor":
+                input_node: DAGNode = SensorInput(
+                    id=next_id("sensor"),
+                    inputs=[],
+                    sensor_name=source_name,
+                    parameter_path=full_source_path,
+                    units=source_units,
+                )
+            else:
+                learned_leaf = navigate_to_leaf(source_root, full_source_path)
+                input_node = build_value_node(
+                    source_name,
+                    source_root,
+                    full_source_path,
+                    learned_leaf,
+                    is_output=False,
+                )
+
+            target_units = leaf.units if leaf else None
+            scale_factor = compute_scale_factor(source_units, target_units, rel_type)
+
+            current_node = input_node
+
+            if scale_factor != 1.0:
+                scale_node = Scale(
+                    id=next_id("scale"),
+                    inputs=[current_node],
+                    scale_factor=scale_factor,
+                    source_units=source_units,
+                    target_units=target_units,
+                )
+                current_node = scale_node
+
+            if rel_type in (Rel.delta, Rel.per_second):
+                state_update_id = next_id("state_update")
+                state_node = State(
+                    id=next_id("state"),
+                    inputs=[],
+                    state_name=state_update_id,
+                    initial_value=0.0,
+                    units=target_units,
+                )
+
+                state_update = StateUpdate(
+                    id=state_update_id,
+                    inputs=[state_node, current_node],
+                    state_ref=state_node,
+                    update_type=rel_type,
+                )
+                current_node = state_update
+
+            update_node = Update(
+                id=next_id("update"),
+                inputs=[current_node],
+                outlier_handling=outlier,
+            )
+
+            input_nodes.append(update_node)
+
+        if is_output:
+            output_node = PredictionOutput(
+                id=next_id("output"),
+                inputs=input_nodes,
+                parameter_name=root_name,
+                path=leaf_path,
+            )
+            return output_node
+
+        learned_node = LearnedValue(
+            id=next_id("learned"),
+            inputs=input_nodes,
+            learned_name=root_name,
+            parameter_path=leaf_path,
+            units=leaf.units if leaf else None,
+        )
+        learned_nodes[(root_name, leaf_path)] = learned_node
+        return learned_node
 
     # Process each predicted parameter
     for pred_name, pred_param in model._predicted.items():
@@ -336,119 +455,12 @@ def build_dag(model: "BuildModel") -> Dict[str, PredictionOutput]:
             full_path = (pred_name,) + leaf_path
             output_path_str = ".".join(full_path)
 
-            # Collect all applicable relationships for this leaf
-            relationships = collect_applicable_relationships(pred_param, leaf_path, leaf)
-
-            if not relationships:
-                # No relationships - just create output node with no inputs
-                output_node = PredictionOutput(
-                    id=next_id("output"),
-                    inputs=[],
-                    parameter_name=pred_name,
-                    path=leaf_path,
-                )
-                outputs[output_path_str] = output_node
-                continue
-
-            # Build input nodes for each relationship
-            input_nodes: List[DAGNode] = []
-
-            for target_param, source_param, rel_type, outlier, source_subpath in relationships:
-                # Find source info (sensor or learned)
-                try:
-                    source_type, source_name, source_base_path = find_source_info(
-                        source_param, model
-                    )
-                except ValueError:
-                    # Source not found in model - skip this relationship
-                    continue
-
-                # The full path within the source is base_path + subpath
-                full_source_path = source_base_path + source_subpath
-
-                # Navigate to the source leaf to get its units
-                if source_type == "sensor":
-                    source_root = model._sensors[source_name].parameter
-                else:
-                    source_root = model._learned[source_name]
-
-                source_leaf = navigate_to_leaf(source_root, full_source_path)
-                source_units = source_leaf.units if source_leaf else None
-
-                # Create input node
-                if source_type == "sensor":
-                    input_node: DAGNode = SensorInput(
-                        id=next_id("sensor"),
-                        inputs=[],
-                        sensor_name=source_name,
-                        parameter_path=full_source_path,
-                        units=source_units,
-                    )
-                else:
-                    input_node = LearnedInput(
-                        id=next_id("learned"),
-                        inputs=[],
-                        learned_name=source_name,
-                        parameter_path=full_source_path,
-                        units=source_units,
-                    )
-
-                # Check if we need a scale node
-                target_units = leaf.units
-                scale_factor = compute_scale_factor(source_units, target_units, rel_type)
-
-                current_node = input_node
-
-                if scale_factor != 1.0:
-                    scale_node = Scale(
-                        id=next_id("scale"),
-                        inputs=[current_node],
-                        scale_factor=scale_factor,
-                        source_units=source_units,
-                        target_units=target_units,
-                    )
-                    current_node = scale_node
-
-                # Handle delta/per_second relationships with State/StateUpdate
-                if rel_type in (Rel.delta, Rel.per_second):
-                    # Get or create state node for this leaf
-                    state_key = output_path_str
-                    if state_key not in state_nodes:
-                        state_node = State(
-                            id=next_id("state"),
-                            inputs=[],
-                            state_name=output_path_str,
-                            initial_value=0.0,
-                            units=target_units,
-                        )
-                        state_nodes[state_key] = state_node
-                    else:
-                        state_node = state_nodes[state_key]
-
-                    # Create StateUpdate node
-                    state_update = StateUpdate(
-                        id=next_id("state_update"),
-                        inputs=[state_node, current_node],
-                        state_ref=state_node,
-                    )
-                    current_node = state_update
-
-                # Create Update node for this relationship
-                update_node = Update(
-                    id=next_id("update"),
-                    inputs=[current_node],
-                    outlier_handling=outlier,
-                    rel_type=rel_type,
-                )
-
-                input_nodes.append(update_node)
-
-            # Create the output node combining all inputs
-            output_node = PredictionOutput(
-                id=next_id("output"),
-                inputs=input_nodes,
-                parameter_name=pred_name,
-                path=leaf_path,
+            output_node = build_value_node(
+                pred_name,
+                pred_param,
+                leaf_path,
+                leaf,
+                is_output=True,
             )
             outputs[output_path_str] = output_node
 
@@ -480,7 +492,7 @@ def render_dag_mermaid(outputs: Dict[str, PredictionOutput]) -> str:
             if path:
                 label += f".{path}"
             return label
-        if isinstance(node, LearnedInput):
+        if isinstance(node, LearnedValue):
             path = format_path(node.parameter_path)
             label = f"Learned: {node.learned_name}"
             if path:
@@ -491,12 +503,13 @@ def render_dag_mermaid(outputs: Dict[str, PredictionOutput]) -> str:
         if isinstance(node, State):
             return f"State: {node.state_name}"
         if isinstance(node, StateUpdate):
+            if node.update_type:
+                return f"State Update ({node.update_type.value})"
             return "State Update"
         if isinstance(node, Update):
-            rel_name = node.rel_type.value if node.rel_type else "update"
             if node.outlier_handling:
-                return f"Update ({rel_name}, {node.outlier_handling.value})"
-            return f"Update ({rel_name})"
+                return f"Update ({node.outlier_handling.value})"
+            return "Update"
         if isinstance(node, PredictionOutput):
             full_path = ".".join((node.parameter_name,) + node.path)
             return f"Output: {full_path}"
